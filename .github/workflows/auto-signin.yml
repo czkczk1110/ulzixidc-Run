@@ -2,10 +2,8 @@ name: Ulzix Auto Signin
 
 on:
   schedule:
-    # 每天国际标准时间 01:00 (北京时间早上 09:00) 自动触发一次
     - cron: '0 1 * * *'
   workflow_dispatch:
-    # 支持手动触发
 
 jobs:
   signin:
@@ -22,7 +20,7 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        npm install puppeteer-core axios
+        npm install puppeteer-core axios v2ray-url-decoder
 
     - name: Install Xray & VLESS to Socks5 10080
       env:
@@ -32,57 +30,54 @@ jobs:
         curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
         unzip xray.zip && chmod +x xray
         
-        # 使用 Python 脚本快速解析标准 vless 并生成 Xray config.json
-        cat << 'EOF' > parse_vless.py
-        import os, json, re
-        from urllib.parse import urlparse, parse_qs
-
-        link = os.environ.get("VLESS_LINK", "")
-        if not link.startswith("vless://"):
-            print("VLESS 链接格式错误")
-            exit(1)
-
-        pattern = re.compile(r"vless://(.*?)@(.*?):(\d+)(.*)")
-        match = pattern.match(link)
-        if match:
-            uuid, address, port, rest = match.groups()
-            remain = urlparse("http://localhost" + rest.split("#")[0])
-            params = parse_qs(remain.query)
-            
-            config = {
-                "inbounds": [{"port": 10080, "protocol": "socks", "settings": {"auth": "noauth"}}],
-                "outbounds": [{
-                    "protocol": "vless",
-                    "settings": {
-                        "vnext": [{
-                            "address": address, "port": int(port),
-                            "users": [{"id": uuid, "encryption": "none", "level": 0}]
-                        }]
-                    },
-                    "streamSettings": {
-                        "network": params.get("type", ["ws"])[0],
-                        "security": params.get("security", ["tls"])[0],
-                        "wsSettings": {"path": params.get("path", ["/"])[0]}
-                    }
-                }]
-            }
-            with open("config.json", "w") as f:
-                json.dump(config, f, indent=4)
-            print("Xray 配置文件生成成功")
-        EOF
-        python3 parse_vless.py
+        # 使用专业的 v2ray-url-decoder 解密并生成完整规范的 config.json
+        node -e '
+        const { v2rayUrlDecoder } = require("v2ray-url-decoder");
+        const fs = require("fs");
         
-        # 后台启动 Xray 代理
-        ./xray -config config.json > /dev/null 2>&1 &
+        try {
+            const link = process.env.VLESS_LINK;
+            const result = v2rayUrlDecoder(link);
+            
+            // 构造出标准的 Xray 配置文件
+            const config = {
+                "log": { "loglevel": "warning" },
+                "inbounds": [{
+                    "port": 10080,
+                    "protocol": "socks",
+                    "settings": { "auth": "noauth", "udp": true }
+                }],
+                "outbounds": [
+                    result.config
+                ]
+            };
+            
+            // 强行把本地出站的端口重置为标准的 socks5 接入
+            config.outbounds[0].tag = "proxy";
+            
+            fs.writeFileSync("config.json", JSON.stringify(config, null, 4));
+            console.log("专业解析成功：config.json 已生成");
+        } catch (e) {
+            console.error("解析 VLESS 失败:", e.message);
+            process.exit(1);
+        }
+        '
+        
+        # 启动 Xray 测试网络
+        ./xray -config config.json > xray.log 2>&1 &
         echo "等待代理隧道建立..."
-        sleep 3
+        sleep 5
+        
+        # 测试节点是否通畅
+        echo "测试节点可用性..."
+        curl -I -s --socks5 127.0.0.1:10080 https://www.google.com | head -n 5 || true
 
     - name: Install and Setup CloakBrowser (Chrome-based)
       run: |
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         
-        # 启动 Chrome 并强制使用 VLESS 转出来的本地 Socks5 代理
+        # 启动 Chrome 并绑定代理
         google-chrome-stable \
           --headless=new \
           --no-sandbox \
