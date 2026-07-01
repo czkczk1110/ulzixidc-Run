@@ -1,0 +1,107 @@
+name: Ulzix Auto Signin
+
+on:
+  schedule:
+    # 每天国际标准时间 01:00 (北京时间早上 09:00) 自动触发一次
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    # 支持手动触发
+
+jobs:
+  signin:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/actions-setup-node@v4
+      with:
+        node-version: '18'
+
+    - name: Install Dependencies
+      run: |
+        npm install puppeteer-core axios
+
+    - name: Install Xray & VLESS to Socks5 50001
+      env:
+        VLESS_LINK: ${{ secrets.VLESS_LINK }}
+      run: |
+        # 下载并安装 Xray-core
+        curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+        unzip xray.zip && chmod +x xray
+        
+        # 使用 Python 脚本或简易方式解析 vless 节点并生成配置文件
+        # 这里使用简易的一键桥接转成本地 socks5:10080 代理
+        # 为了稳定，直接用 python 快速解析标准 vless 并生成 Xray config.json
+        cat << 'EOF' > parse_vless.py
+        import os, json, re
+        from urllib.parse import urlparse, parse_qs
+
+        link = os.environ.get("VLESS_LINK", "")
+        if not link.startswith("vless://"):
+            print("VLESS 链接格式错误")
+            exit(1)
+
+        # 提取 uuid, address, port 
+        pattern = re.compile(r"vless://(.*?)@(.*?):(\d+)(.*)")
+        match = pattern.match(link)
+        if match:
+            uuid, address, port, rest = match.groups()
+            remain = urlparse("http://localhost" + rest.split("#")[0])
+            params = parse_qs(remain.query)
+            
+            config = {
+                "inbounds": [{"port": 10080, "protocol": "socks", "settings": {"auth": "noauth"}}],
+                "outbounds": [{
+                    "protocol": "vless",
+                    "settings": {
+                        "vnext": [{
+                            "address": address, "port": int(port),
+                            "users": [{"id": uuid, "encryption": "none", "level": 0}]
+                        }]
+                    },
+                    "streamSettings": {
+                        "network": params.get("type", ["ws"])[0],
+                        "security": params.get("security", ["tls"])[0],
+                        "wsSettings": {"path": params.get("path", ["/"])[0]}
+                    }
+                }]
+            }
+            with open("config.json", "w") as f:
+                json.dump(config, f, indent=4)
+            print("Xray 配置文件生成成功")
+        EOF
+        python3 parse_vless.py
+        
+        # 后台启动 Xray 代理
+        ./xray -config config.json > /dev/null 2>&1 &
+        echo "等待代理隧道建立..."
+        sleep 3
+
+    - name: Install and Setup CloakBrowser (Chrome-based)
+      run: |
+        # 顺应 CloakBrowser 的无头/指纹要求，这里直接用系统 Chrome 并挂载全局 socks5 代理
+        # 同时通过远程调试端口 9222 供 puppeteer 控制
+        sudo apt-get update
+        sudo apt-get install -y google-chrome-stable
+        
+        # 启动 Chrome 并强制使用 VLESS 转出来的本地 Socks5 代理
+        google-chrome-stable \
+          --headless=new \
+          --no-sandbox \
+          --remote-debugging-port=9222 \
+          --proxy-server="socks5://127.0.0.1:10080" \
+          --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" &
+        
+        sleep 5
+
+    - name: Run Signin Script
+      env:
+        USER_EMAIL: ${{ secrets.USER_EMAIL }}
+        USER_PASSWORD: ${{ secrets.USER_PASSWORD }}
+        TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+        TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+      run: |
+        node sign.js
