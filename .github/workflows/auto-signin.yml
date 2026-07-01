@@ -16,7 +16,7 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Setup Node.js
-      uses: actions/actions-setup-node@v4
+      uses: actions/setup-node@v4
       with:
         node-version: '18'
 
@@ -24,7 +24,7 @@ jobs:
       run: |
         npm install puppeteer-core axios
 
-    - name: Install Xray & VLESS to Socks5 50001
+    - name: Install Xray & VLESS to Socks5 10080
       env:
         VLESS_LINK: ${{ secrets.VLESS_LINK }}
       run: |
@@ -32,9 +32,7 @@ jobs:
         curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
         unzip xray.zip && chmod +x xray
         
-        # 使用 Python 脚本或简易方式解析 vless 节点并生成配置文件
-        # 这里使用简易的一键桥接转成本地 socks5:10080 代理
-        # 为了稳定，直接用 python 快速解析标准 vless 并生成 Xray config.json
+        # 使用 Python 脚本快速解析标准 vless 并生成 Xray config.json
         cat << 'EOF' > parse_vless.py
         import os, json, re
         from urllib.parse import urlparse, parse_qs
@@ -44,7 +42,6 @@ jobs:
             print("VLESS 链接格式错误")
             exit(1)
 
-        # 提取 uuid, address, port 
         pattern = re.compile(r"vless://(.*?)@(.*?):(\d+)(.*)")
         match = pattern.match(link)
         if match:
@@ -82,8 +79,6 @@ jobs:
 
     - name: Install and Setup CloakBrowser (Chrome-based)
       run: |
-        # 顺应 CloakBrowser 的无头/指纹要求，这里直接用系统 Chrome 并挂载全局 socks5 代理
-        # 同时通过远程调试端口 9222 供 puppeteer 控制
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         
