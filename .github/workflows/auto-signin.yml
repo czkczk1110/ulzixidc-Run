@@ -30,7 +30,7 @@ jobs:
         curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
         unzip -o xray.zip && chmod +x xray
         
-        # 2. 健壮的 Python 兼容解析器：完美捕获 ws/grpc/tls/reality/flow/host 等全部核心参数
+        # 2. 移除新版 Xray 不支持的旧参数，完美适配新架构
         python3 -c '
         import os, json, re
         from urllib.parse import urlparse, parse_qs
@@ -49,7 +49,6 @@ jobs:
             remain = urlparse("http://localhost" + rest.split("#")[0])
             params = parse_qs(remain.query)
             
-            # 基础出站
             outbound = {
                 "protocol": "vless",
                 "settings": {
@@ -61,12 +60,10 @@ jobs:
                 "streamSettings": {}
             }
             
-            # 流控设置
             flow = params.get("flow", [""])[0]
             if flow:
                 outbound["settings"]["vnext"][0]["users"][0]["flow"] = flow
                 
-            # 传输协议
             network = params.get("type", ["tcp"])[0]
             outbound["streamSettings"]["network"] = network
             
@@ -77,14 +74,13 @@ jobs:
             elif network == "grpc":
                 outbound["streamSettings"]["grpcSettings"] = {"serviceName": params.get("serviceName", [""])[0]}
                 
-            # 安全协议 (tls / reality / none)
             security = params.get("security", ["none"])[0]
             outbound["streamSettings"]["security"] = security
             
             if security == "tls":
+                # 新版 Xray-core 移除了 allowInsecure，直接声明标准的 serverName 即可
                 outbound["streamSettings"]["tlsSettings"] = {
-                    "serverName": params.get("sni", [params.get("host", [address])[0]])[0],
-                    "allowInsecure": True
+                    "serverName": params.get("sni", [params.get("host", [address])[0]])[0]
                 }
             elif security == "reality":
                 outbound["streamSettings"]["realitySettings"] = {
@@ -94,7 +90,6 @@ jobs:
                     "fingerprint": params.get("fp", ["chrome"])[0]
                 }
                 
-            # 完整 Xray 架构
             config = {
                 "log": {"loglevel": "warning"},
                 "inbounds": [{
@@ -106,18 +101,18 @@ jobs:
             
             with open("config.json", "w") as f:
                 json.dump(config, f, indent=4)
-            print("=== [SUCCESS] Xray 核心配置文件完美生成 ===")
+            print("=== [SUCCESS] Xray 配置文件完美生成 ===")
         except Exception as e:
             print(f"=== [ERROR] 解析失败: {e} ===")
             exit(1)
         '
         
-        # 3. 启动并守候守护进程
+        # 3. 后台启动 Xray
         ./xray -config config.json > xray.log 2>&1 &
         echo "正在等待代理建立安全隧道..."
         sleep 6
         
-        # 4. 强力连通性阻断校验 (连续测试 3 次，防止延迟波动导致接下来全盘皆输)
+        # 4. 强力连通性阻断校验
         echo "开始检测代理有效性..."
         success=false
         for i in {1..3}; do
@@ -131,7 +126,7 @@ jobs:
         done
         
         if [ "$success" = false ]; then
-          echo "❌ 错误: 经过本地转换后代理仍不通，请检查 VLESS_LINK 的可用性！"
+          echo "❌ 错误: 代理转换后网络仍不通！"
           echo "====== Xray 日志备份如下 ======"
           cat xray.log
           exit 1
@@ -142,7 +137,6 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable
         
-        # 启动 Chrome，采用 --proxy-server 传递规范的本地 Socks5 映射
         google-chrome-stable \
           --headless=new \
           --no-sandbox \
