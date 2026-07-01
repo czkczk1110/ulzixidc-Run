@@ -49,15 +49,15 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         browser = await puppeteer.connect({
             browserURL: 'http://127.0.0.1:9222',
             defaultViewport: { width: 1280, height: 1000 },
-            protocolTimeout: 60000 // 缩短协议级别硬超时到1分钟，防止在底层锁死太久
+            protocolTimeout: 60000
         });
 
         page = await browser.newPage();
         
         // --- 1. 登录流程 ---
         console.log('正在打开登录页面...');
-        await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle2', timeout: 60000 });
-        await delay(4000);
+        await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0', timeout: 90000 });
+        await delay(6000);
         
         console.log('开始输入邮箱与密码...');
         await page.evaluate((email, pwd) => {
@@ -84,17 +84,16 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         });
         
         console.log('等待页面完成登录重定向...');
-        await delay(8000);
+        await delay(10000);
 
         // --- 2. 跳转至签到专区 ---
         console.log('正在跳转到每日签到网址...');
-        await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle2', timeout: 60000 });
+        await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle0', timeout: 90000 });
 
-        // --- 3. 等待与破盾 ---
-        console.log('给予 15 秒宽裕时间等待字体和页面加载...');
-        await delay(15000); 
+        console.log('给予 20 秒宽裕时间等待页面完全渲染...');
+        await delay(20000); 
 
-        // 尝试自动隐蔽干扰的横幅组件
+        // 尝试自动隐藏可能遮挡的横幅组件
         await page.evaluate(() => {
             const elements = Array.from(document.querySelectorAll('div'));
             const cookieBar = elements.find(el => el.textContent.includes('cookies'));
@@ -103,11 +102,10 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
         await takeScreenshot(page, '1_before_signin_page');
 
-        // --- 4. 安全尝试寻找并点击签到按钮 ---
+        // --- 3. 定位签到按钮并尝试点击 ---
         console.log('执行第三步：正在定位签到按钮并尝试点击...');
         
         const clickStatus = await page.evaluate(() => {
-            // 通过更简短、不易引起崩溃的方式匹配页面上的主要按钮
             const primaryButton = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
             if (primaryButton) {
                 primaryButton.click();
@@ -121,7 +119,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
         await takeScreenshot(page, '3_after_clicked_result');
 
-        // --- 5. 数据提取 ---
+        // --- 4. 数据提取 ---
         console.log('第四步：提取数据...');
         const data = await page.evaluate(() => {
             const bodyText = document.body.innerText;
