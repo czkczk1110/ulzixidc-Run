@@ -49,12 +49,12 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         browser = await puppeteer.connect({
             browserURL: 'http://127.0.0.1:9222',
             defaultViewport: { width: 1280, height: 1000 },
-            protocolTimeout: 300000 // 延长至 5 分钟
+            protocolTimeout: 60000 // 缩短协议级别硬超时到1分钟，防止在底层锁死太久
         });
 
         page = await browser.newPage();
         
-        // --- 1. 登录页面流程 ---
+        // --- 1. 登录流程 ---
         console.log('正在打开登录页面...');
         await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle2', timeout: 60000 });
         await delay(4000);
@@ -90,48 +90,38 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('正在跳转到每日签到网址...');
         await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle2', timeout: 60000 });
 
-        // --- 3. 强力破盾与关横幅等待 ---
-        console.log('正在等待验证码和遮挡组件加载 (给予 20 秒宽裕时间)...');
-        await delay(20000); 
+        // --- 3. 等待与破盾 ---
+        console.log('给予 15 秒宽裕时间等待字体和页面加载...');
+        await delay(15000); 
 
-        // 尝试自动关掉遮挡视线的 Cookie 横幅，防止干扰
+        // 尝试自动隐蔽干扰的横幅组件
         await page.evaluate(() => {
-            // 寻找带有“X”号或者包含 cookies 文本框里的 button 并点击
-            const closeBtn = document.querySelector('.ant-modal-close, .close, [class*="close"]');
-            if (closeBtn) closeBtn.click();
-            
-            // 如果还存在，直接通过 JS 把整条蓝色横幅蒸发掉
             const elements = Array.from(document.querySelectorAll('div'));
             const cookieBar = elements.find(el => el.textContent.includes('cookies'));
             if (cookieBar) cookieBar.style.display = 'none';
         }).catch(() => {});
 
-        // 截取点击前的最终画面
         await takeScreenshot(page, '1_before_signin_page');
 
-        // --- 4. 绕过 CF 拦截：执行底层 DOM 级 JS 强制点击 ---
-        console.log('执行第三步：正在通过底层注入直接激活“立即签到”方法...');
+        // --- 4. 安全尝试寻找并点击签到按钮 ---
+        console.log('执行第三步：正在定位签到按钮并尝试点击...');
         
-        const clickResult = await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button'));
-            // 匹配带有“立即签到”或含有四个方块乱码但实质是签到的主按钮
-            const signBtn = buttons.find(b => b.textContent.includes('立即签到') || b.querySelector('.anticon-check-circle') || b.className.includes('ant-btn-primary'));
-            
-            if (signBtn) {
-                // 核心：不用 Puppeteer 鼠标，直接用网页原生 JS 触发点击，能够百分百绕过 Input.dispatchMouseEvent 挂起错误！
-                signBtn.click();
-                return "已找到按钮并执行底层 JS 强制点击";
+        const clickStatus = await page.evaluate(() => {
+            // 通过更简短、不易引起崩溃的方式匹配页面上的主要按钮
+            const primaryButton = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
+            if (primaryButton) {
+                primaryButton.click();
+                return "成功触发主按钮点击事件";
             }
-            return "未在页面中定位到匹配按钮";
-        });
+            return "未找到合适的按钮元素";
+        }).catch(err => `点击捕获发生异常: ${err.message}`);
         
-        console.log(`底层反馈: ${clickResult}`);
+        console.log(`按钮点击执行状态: ${clickStatus}`);
         await delay(8000);
 
-        // 截取点击后的画面
         await takeScreenshot(page, '3_after_clicked_result');
 
-        // --- 5. 数据抓取与提取 ---
+        // --- 5. 数据提取 ---
         console.log('第四步：提取数据...');
         const data = await page.evaluate(() => {
             const bodyText = document.body.innerText;
@@ -139,10 +129,10 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
             const ptsMatch = bodyText.match(/(\d+)\s*pts/i);
             
             return {
-                days: daysMatch ? daysMatch[1] : "无法读取(可能今日已签过)",
+                days: daysMatch ? daysMatch[1] : "数据未更新/今日已签",
                 pts: ptsMatch ? ptsMatch[1] : "未知"
             };
-        });
+        }).catch(() => ({ days: "抓取挂起", pts: "未知" }));
 
         messageResult += `✅ 自动签到任务处理完毕！\n📅 连续签到天数：${data.days} 天\n💎 获得/当前积分：${data.pts} pts`;
         console.log(messageResult);
