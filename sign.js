@@ -27,10 +27,11 @@ async function sendTelegram(message) {
     }
 }
 
+// 修复黑屏：不再使用 fullPage: true，直接截取标准视窗画面
 async function takeScreenshot(page, name) {
     try {
         const filePath = path.join(screenshotDir, `${name}.png`);
-        await page.screenshot({ path: filePath, fullPage: true });
+        await page.screenshot({ path: filePath }); 
         console.log(`📸 截图已保存: screenshots/${name}.png`);
     } catch (e) {
         console.log(`❌ 截图失败 (${name}):`, e.message);
@@ -48,7 +49,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('正在连接到本地 Chrome...');
         browser = await puppeteer.connect({
             browserURL: 'http://127.0.0.1:9222',
-            defaultViewport: { width: 1280, height: 1000 },
+            defaultViewport: { width: 1280, height: 800 },
             protocolTimeout: 60000
         });
 
@@ -57,7 +58,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         // --- 1. 登录流程 ---
         console.log('正在打开登录页面...');
         await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0', timeout: 60000 });
-        await delay(6000);
+        await delay(5000);
         
         console.log('开始输入邮箱与密码...');
         await page.evaluate((email, pwd) => {
@@ -93,13 +94,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('给予 20 秒宽裕时间等待页面完全渲染...');
         await delay(20000); 
 
-        // 自动隐藏遮挡组件
-        await page.evaluate(() => {
-            const elements = Array.from(document.querySelectorAll('div'));
-            const cookieBar = elements.find(el => el.textContent.includes('cookies'));
-            if (cookieBar) cookieBar.style.display = 'none';
-        }).catch(() => {});
-
         await takeScreenshot(page, '1_before_signin_page');
 
         // --- 3. 定位签到按钮并尝试点击 ---
@@ -115,38 +109,31 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         }).catch(err => `点击捕获发生异常: ${err.message}`);
         
         console.log(`按钮点击执行状态: ${clickStatus}`);
-        await delay(10000); // 留够 10 秒让签到后的积分刷新回来
+        
+        // 核心改动：延长等待时间至 15 秒，确保异步接口把积分更新到网页DOM里
+        console.log('等待异步数据刷新响应...');
+        await delay(15000); 
 
         await takeScreenshot(page, '3_after_clicked_result');
 
-        // --- 4. 终极兼容数据提取 ---
+        // --- 4. 调试：直接在控制台输出当前网页内容，破除黑屏迷雾 ---
+        console.log('=== [调试信息] 当前页面文本内容预览 ===');
+        const dumpText = await page.evaluate(() => document.body.innerText);
+        console.log(dumpText.substring(0, 800)); // 打印前800个字，让我们能在 Actions 日志里直接看汉字
+        console.log('======================================');
+
+        // --- 5. 提取数据 ---
         console.log('第四步：提取数据...');
         const data = await page.evaluate(() => {
             const bodyText = document.body.innerText;
-            
-            // 模糊与精确多模态匹配天数
-            let days = "未知";
             const daysMatch = bodyText.match(/(?:已连续签到|连续签到|已签到)\s*(\d+)\s*天/) || bodyText.match(/(\d+)\s*天/);
-            if (daysMatch) {
-                days = daysMatch[1];
-            } else {
-                // 兜底找页面中所有的数字，看能不能捞出天数
-                const numbers = bodyText.match(/\d+/g);
-                if (numbers && numbers.length > 0) days = numbers[0]; 
-            }
-            
-            // 模糊与精确多模态匹配积分
-            let pts = "未知";
             const ptsMatch = bodyText.match(/(\d+)\s*(?:pts|积分|点数)/i) || bodyText.match(/积分\s*:\s*(\d+)/);
-            if (ptsMatch) {
-                pts = ptsMatch[1];
-            } else {
-                // 如果实在匹配不到，把页面上前 200 个字导出来看看结构
-                pts = "需观察页面渲染";
-            }
             
-            return { days, pts };
-        }).catch(() => ({ days: "提取异常", pts: "提取异常" }));
+            return {
+                days: daysMatch ? daysMatch[1] : "已成功点击(请去官网确认天数)",
+                pts: ptsMatch ? ptsMatch[1] : "未知"
+            };
+        }).catch(() => ({ days: "提取失败", pts: "提取失败" }));
 
         messageResult += `✅ 自动签到任务处理完毕！\n📅 连续签到天数：${data.days} 天\n💎 获得/当前积分：${data.pts} pts`;
         console.log(messageResult);
