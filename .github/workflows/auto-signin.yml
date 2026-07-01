@@ -20,7 +20,8 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        npm install puppeteer-core axios v2ray-url-decoder
+        # 移除了报错的第三方包，只保留最核心的两个
+        npm install puppeteer-core axios
 
     - name: Install Xray & VLESS to Socks5 10080
       env:
@@ -30,16 +31,60 @@ jobs:
         curl -L -o xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
         unzip xray.zip && chmod +x xray
         
-        # 使用专业的 v2ray-url-decoder 解密并生成完整规范的 config.json
+        # 使用 Node.js 原生标准库 URL 精准解析 vless 链接
         node -e '
-        const { v2rayUrlDecoder } = require("v2ray-url-decoder");
         const fs = require("fs");
-        
         try {
-            const link = process.env.VLESS_LINK;
-            const result = v2rayUrlDecoder(link);
+            const rawUrl = process.env.VLESS_LINK.trim();
+            if (!rawUrl.startsWith("vless://")) {
+                throw new Error("链接必须以 vless:// 开头");
+            }
             
-            // 构造出标准的 Xray 配置文件
+            // 解析标准 URL 格式
+            const urlObj = new URL(rawUrl);
+            const uuid = urlObj.username;
+            const address = urlObj.hostname;
+            const port = parseInt(urlObj.port);
+            const searchParams = urlObj.searchParams;
+            
+            // 提取关键传输参数
+            const network = searchParams.get("type") || "ws";
+            const security = searchParams.get("security") || "none";
+            const path = searchParams.get("path") || "/";
+            const host = searchParams.get("host") || "";
+            
+            const outbound = {
+                "protocol": "vless",
+                "settings": {
+                    "vnext": [{
+                        "address": address,
+                        "port": port,
+                        "users": [{
+                            "id": uuid,
+                            "encryption": "none",
+                            "level": 0
+                        }]
+                    }]
+                },
+                "streamSettings": {
+                    "network": network,
+                    "security": security
+                }
+            };
+            
+            // 根据协议类型补全设置
+            if (network === "ws") {
+                outbound.streamSettings.wsSettings = { "path": path };
+                if (host) outbound.streamSettings.wsSettings.headers = { "Host": host };
+            }
+            if (security === "tls") {
+                outbound.streamSettings.tlsSettings = {
+                    "serverName": host || address,
+                    "allowInsecure": true
+                };
+            }
+            
+            // 组合完整 config
             const config = {
                 "log": { "loglevel": "warning" },
                 "inbounds": [{
@@ -47,18 +92,13 @@ jobs:
                     "protocol": "socks",
                     "settings": { "auth": "noauth", "udp": true }
                 }],
-                "outbounds": [
-                    result.config
-                ]
+                "outbounds": [outbound]
             };
             
-            // 强行把本地出站的端口重置为标准的 socks5 接入
-            config.outbounds[0].tag = "proxy";
-            
             fs.writeFileSync("config.json", JSON.stringify(config, null, 4));
-            console.log("专业解析成功：config.json 已生成");
+            console.log("原生解析成功：config.json 已安全生成");
         } catch (e) {
-            console.error("解析 VLESS 失败:", e.message);
+            console.error("解析 VLESS 错误:", e.message);
             process.exit(1);
         }
         '
