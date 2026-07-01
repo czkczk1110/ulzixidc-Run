@@ -22,6 +22,12 @@ jobs:
       run: |
         npm install puppeteer-core axios
 
+    # === 【关键修复】：安装中文字体，消除 ⬜⬜ 乱码，防止浏览器引擎和 5秒盾死锁 ===
+    - name: Install Chinese Fonts
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y fonts-wqy-zenhei fonts-wqy-microhei xfonts-wqy
+
     - name: Install Xray & VLESS to Socks5 10080
       env:
         VLESS_LINK: ${{ secrets.VLESS_LINK }}
@@ -110,6 +116,7 @@ jobs:
           --no-sandbox \
           --remote-debugging-port=9222 \
           --proxy-server="socks5://127.0.0.1:10080" \
+          --lang=zh-CN \
           --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" &
         
         sleep 5
@@ -123,9 +130,8 @@ jobs:
       run: |
         node sign.js
 
-    # === 【新增步骤】：把产生的截图上报上传至 GitHub Workflows 产物区 ===
     - name: Upload Screenshot Artifacts
-      if: always() # 确保不管运行成功还是失败，都会上传截图
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: signin-screenshots
