@@ -20,7 +20,6 @@ async function sendTelegram(message) {
     }
 }
 
-// 替代旧版被移除的 waitForTimeout
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 (async () => {
@@ -31,29 +30,25 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('正在连接到本地 Chrome...');
         browser = await puppeteer.connect({
             browserURL: 'http://127.0.0.1:9222',
-            defaultViewport: { width: 1280, height: 800 }
+            defaultViewport: { width: 1280, height: 800 },
+            protocolTimeout: 120000 // 将通信超时大幅延长到 2 分钟，防止被 CF 盾拖住时死锁
         });
 
         const page = await browser.newPage();
         
-        // --- 1. 图一：打开并填写登录信息 ---
+        // --- 1. 打开并填写登录信息 ---
         console.log('正在打开登录页面...');
         await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle2', timeout: 60000 });
-        
-        // 留出 3 秒等登录框完全渲染
-        await delay(3000);
+        await delay(4000);
         
         console.log('开始输入邮箱与密码...');
-        // 超强兼容选择器逻辑：先找具有属性的，找不到直接硬塞前两个 input 框
         await page.evaluate((email, pwd) => {
             let emailInput = document.querySelector('input[placeholder*="邮箱"]') || document.querySelectorAll('input')[0];
             let passwordInput = document.querySelector('input[placeholder*="密码"]') || document.querySelectorAll('input')[1];
             
             if (emailInput && passwordInput) {
                 emailInput.value = email;
-                // 触发前端输入框绑定的 input 事件，防止双向绑定不更新
                 emailInput.dispatchEvent(new Event('input', { bubbles: true }));
-                
                 passwordInput.value = pwd;
                 passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
             } else {
@@ -65,10 +60,8 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         await page.evaluate(() => {
             const buttons = Array.from(document.querySelectorAll('button'));
             const loginBtn = buttons.find(b => b.textContent.trim() === '登录');
-            if (loginBtn) {
-                loginBtn.click();
-            } else {
-                // 如果找不到包含“登录”文字的按钮，直接点页面上的第一个主 button
+            if (loginBtn) loginBtn.click();
+            else {
                 const firstBtn = document.querySelector('button');
                 if (firstBtn) firstBtn.click();
                 else throw new Error("未找到登录按钮");
@@ -76,44 +69,47 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         });
         
         console.log('等待页面完成登录重定向...');
-        await delay(6000);
+        await delay(8000);
 
-        // --- 2. 图二：跳转至签到专区 ---
+        // --- 2. 跳转至签到专区 ---
         console.log('正在跳转到每日签到网址...');
         await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle2', timeout: 60000 });
 
-        // --- 3. 图二标志2：处理 Cloudflare Turnstile 真人验证 ---
-        console.log('等待 Cloudflare 5秒盾验证框稳定并自动验证...');
-        await delay(8000); // 留出充足时间让 Cloak 代理环境自主通过或稳定网络
+        // --- 3. 等待 Cloudflare 盾自主稳定 ---
+        console.log('留出 15 秒供浏览器指纹和代理环境自主通过 Cloudflare 5秒盾...');
+        await delay(15000); 
 
-        try {
-            const frames = page.frames();
-            const cfFrame = frames.find(f => f.url().includes('cloudflarechallenges.com'));
-            if (cfFrame) {
-                console.log('检测到 Cloudflare 验证盾结构，尝试强制激活点击...');
-                await cfFrame.click('#challenge-stage').catch(() => {});
-                await delay(5000); 
+        // --- 4. 模拟真人鼠标物理点击“立即签到” ---
+        console.log('执行第三步：尝试寻找并物理点击“立即签到”按钮...');
+        
+        // 通过 Puppeteer 原生定位文本包含“立即签到”的按钮，不走 evaluate 执行内部 js
+        const [signButton] = await page.$$('button');
+        let clicked = false;
+        
+        // 抓取页面所有的 button 元素，从外部模拟鼠标点击
+        const buttons = await page.$$('button');
+        for (const btn of buttons) {
+            const text = await page.evaluate(el => el.textContent, btn);
+            if (text.includes('立即签到')) {
+                console.log('精准定位到“立即签到”按钮，发射物理点击事件...');
+                await btn.click(); // 模拟真人鼠标指针敲击
+                clicked = true;
+                break;
             }
-        } catch (cfErr) {
-            console.log('跳过挑战框交互，交由原生指纹环境:', cfErr.message);
         }
-
-        // --- 4. 图二标志3：点击“立即签到” ---
-        console.log('执行第三步：点击立即签到...');
-        await page.evaluate(() => {
-            const buttons = Array.from(document.querySelectorAll('button'));
-            const signBtn = buttons.find(b => b.textContent.includes('立即签到'));
-            if (signBtn) {
-                signBtn.click();
-            } else {
-                console.log("未发现立即签到按钮，可能已被点击。");
-            }
-        });
+        
+        if (!clicked) {
+            console.log('未通过文本找到按钮，尝试兜底点击页面上可能属于签到的主蓝色按钮...');
+            // 如果文本因为 CF 没刷出来，直接尝试点击页面中央偏下的那个主蓝色按钮
+            await page.click('button.ant-btn-primary').catch(() => {
+                console.log('兜底选择器点击未生效');
+            });
+        }
         
         // 等待数据刷新
-        await delay(5000);
+        await delay(6000);
 
-        // --- 5. 图二标志4、5：数据抓取与提取 ---
+        // --- 5. 数据抓取与提取 ---
         console.log('第四步：提取连续签到天数和获得的积分...');
         const data = await page.evaluate(() => {
             const bodyText = document.body.innerText;
@@ -121,12 +117,12 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
             const ptsMatch = bodyText.match(/(\d+)\s*pts/i);
             
             return {
-                days: daysMatch ? daysMatch[1] : "未捕获到数字(可能今天已签过)",
+                days: daysMatch ? daysMatch[1] : "数据未变动(可能今日已签过/需下次看成效)",
                 pts: ptsMatch ? ptsMatch[1] : "未知"
             };
         });
 
-        messageResult += `✅ 自动签到任务执行成功！\n📅 标志4（连续签到）：${data.days} 天\n💎 标志5（获得积分）：${data.pts} pts`;
+        messageResult += `✅ 自动签到任务执行成功！\n📅 连续签到天数：${data.days} 天\n💎 获得/当前积分：${data.pts} pts`;
         console.log(messageResult);
 
     } catch (error) {
