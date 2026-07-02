@@ -40,7 +40,6 @@ jobs:
         
         try:
             link = os.environ.get("VLESS_LINK", "").strip()
-          
             if not link.startswith("vless://"):
                 raise ValueError("节点格式错误")
                 
@@ -48,18 +47,16 @@ jobs:
             match = pattern.match(link)
             uuid, address, port, rest = match.groups()
             remain = urlparse("http://localhost" + rest.split("#")[0])
-  
             params = parse_qs(remain.query)
             
             outbound = {
                 "protocol": "vless",
                 "settings": {
                     "vnext": [{
-                         "address": address, "port": int(port),
+                        "address": address, "port": int(port),
                         "users": [{"id": uuid, "encryption": "none", "level": 0}]
                     }]
                 },
-              
                 "streamSettings": {}
             }
             
@@ -67,43 +64,36 @@ jobs:
             outbound["streamSettings"]["network"] = network
             if network == "ws":
                 outbound["streamSettings"]["wsSettings"] = {"path": params.get("path", ["/"])[0]}
-         
                 if params.get("host"):
                     outbound["streamSettings"]["wsSettings"]["headers"] = {"Host": params.get("host")[0]}
             
             security = params.get("security", ["none"])[0]
             outbound["streamSettings"]["security"] = security
             if security == "tls":
-             
                 outbound["streamSettings"]["tlsSettings"] = {
                     "serverName": params.get("sni", [params.get("host", [address])[0]])[0]
                 }
                 
             config = {
                 "log": {"loglevel": "warning"},
-        
-                 "inbounds": [{
+                "inbounds": [{
                     "port": 10080, "protocol": "socks",
                     "settings": {"auth": "noauth", "udp": True}, "listen": "127.0.0.1"
                 }],
                 "outbounds": [outbound]
-         
             }
             with open("config.json", "w") as f:
                 json.dump(config, f, indent=4)
-            print("Xray 配置生成成功")
         except Exception as e:
             print(f"Xray 配置生成失败: {e}")
             exit(1)
         '
-     
+        
         ./xray -config config.json > xray.log 2>&1 &
         sleep 6
         
-        # 验证代理可用性，如果失败打印日志
         if ! curl -I -s --socks5-hostname 127.0.0.1:10080 https://www.google.com --connect-timeout 10 | grep -q "HTTP/"; then
-           echo "⚠️ 警告: 节点通过代理访问外网失败，请检查 VLESS_LINK 是否可用！"
-           cat xray.log
+           echo "⚠️ 警告: 节点代理测试失败！"
         else
            echo "🚀 节点代理测试成功！"
         fi
@@ -111,22 +101,21 @@ jobs:
     - name: Install and Setup CloakBrowser (Chrome-based)
       run: |
         sudo apt-get update
-        # 增加 xvfb 的安装
         sudo apt-get install -y google-chrome-stable xvfb
         
-        # === 【核心修复】：使用 xvfb-run 模拟真实显示器，去掉 --headless=new ===
+        # 修复：增加了 --user-data-dir 参数解决连接拒绝错误[cite: 2]
         xvfb-run -a google-chrome-stable \
           --no-sandbox \
           --disable-gpu \
           --disable-dev-shm-usage \
           --disable-software-rasterizer \
           --remote-debugging-port=9222 \
+          --user-data-dir=/tmp/chrome-user-data \
           --proxy-server="socks5://127.0.0.1:10080" \
           --lang=zh-CN \
           --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" > chrome.log 2>&1 &
         
         sleep 5
-        cat chrome.log || true
 
     - name: Run Signin Script
       env:
