@@ -9,53 +9,146 @@ const TG_TOKEN = process.env.TG_BOT_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
 const screenshotDir = path.join(__dirname, 'screenshots');
-if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir);
+if (!fs.existsSync(screenshotDir)) {
+    fs.mkdirSync(screenshotDir);
+}
 
-async function log(msg) { console.log(`[${new Date().toLocaleTimeString()}] ${msg}`); }
+async function sendTelegram(message) {
+    if (!TG_TOKEN || !TG_CHAT_ID) return;
+    try {
+        await axios.post(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+            chat_id: TG_CHAT_ID,
+            text: message,
+            parse_mode: 'Markdown'
+        });
+        console.log('TG 通知发送成功');
+    } catch (err) {
+        console.error('TG 通知发送失败:', err.message);
+    }
+}
+
+// 修复黑屏：不再使用 fullPage: true，直接截取标准视窗画面
+async function takeScreenshot(page, name) {
+    try {
+        const filePath = path.join(screenshotDir, `${name}.png`);
+        await page.screenshot({ path: filePath }); 
+        console.log(`📸 截图已保存: screenshots/${name}.png`);
+    } catch (e) {
+        console.log(`❌ 截图失败 (${name}):`, e.message);
+    }
+}
+
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 (async () => {
     let browser;
+    let page;
+    let messageResult = "🔔 *Ulzix 自动签到通知*\n";
+
     try {
-        await log('启动脚本...');
-        browser = await puppeteer.connect({ browserURL: 'http://127.0.0.1:9222', defaultViewport: { width: 1280, height: 800 } });
-        const page = await browser.newPage();
+        console.log('正在连接到本地 Chrome...');
+        browser = await puppeteer.connect({
+            browserURL: 'http://127.0.0.1:9222',
+            defaultViewport: { width: 1280, height: 800 },
+            protocolTimeout: 60000
+        });
+
+        page = await browser.newPage();
         
-        await log('打开登录页');
-        await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0' });
+        // --- 1. 登录流程 ---
+        console.log('正在打开登录页面...');
+        await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0', timeout: 60000 });
+        await delay(5000);
         
-        await log('输入凭据');
-        await page.type('input[type="email"]', EMAIL);
-        await page.type('input[type="password"]', PASSWORD);
-        await page.click('button[type="submit"]');
-        await page.waitForNavigation({ waitUntil: 'networkidle0' });
-
-        await log('进入签到页');
-        await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle0' });
-        await new Promise(r => setTimeout(r, 5000));
-
-        await log('执行签到点击');
-        await page.click('button.ant-btn-primary');
-        await new Promise(r => setTimeout(r, 10000));
-
-        await log('处理验证 (尝试识别 IFRAME)');
-        const frames = page.frames();
-        for (const frame of frames) {
-            if (frame.url().includes('turnstile')) {
-                await log('发现验证框架，等待点击...');
-                await frame.waitForSelector('body', { visible: true });
-                await frame.click('body');
+        console.log('开始输入邮箱与密码...');
+        await page.evaluate((email, pwd) => {
+            let emailInput = document.querySelector('input[placeholder*="邮箱"]') || document.querySelectorAll('input')[0];
+            let passwordInput = document.querySelector('input[placeholder*="密码"]') || document.querySelectorAll('input')[1];
+            
+            if (emailInput && passwordInput) {
+                emailInput.value = email;
+                emailInput.dispatchEvent(new Event('input', { bubbles: true }));
+                passwordInput.value = pwd;
+                passwordInput.dispatchEvent(new Event('input', { bubbles: true }));
             }
-        }
+        }, EMAIL, PASSWORD);
         
-        await new Promise(r => setTimeout(r, 10000));
-        await page.screenshot({ path: path.join(screenshotDir, 'final_result.png') });
-        await log('截图已保存');
+        console.log('点击登录按钮...');
+        await page.evaluate(() => {
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const loginBtn = buttons.find(b => b.textContent.trim() === '登录');
+            if (loginBtn) loginBtn.click();
+            else {
+                const firstBtn = document.querySelector('button');
+                if (firstBtn) firstBtn.click();
+            }
+        });
+        
+        console.log('等待页面完成登录重定向...');
+        await delay(10000);
 
-    } catch (e) {
-        await log('脚本出错: ' + e.message);
+        // --- 2. 跳转至签到专区 ---
+        console.log('正在跳转到每日签到网址...');
+        await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle0', timeout: 60000 });
+
+        console.log('给予 20 秒宽裕时间等待页面完全渲染...');
+        await delay(20000); 
+
+        await takeScreenshot(page, '1_before_signin_page');
+
+        // --- 3. 定位签到按钮并尝试点击 ---
+        console.log('执行第三步：正在定位签到按钮并尝试点击...');
+        
+        const clickStatus = await page.evaluate(() => {
+            const primaryButton = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
+            if (primaryButton) {
+                primaryButton.click();
+                return "成功触发主按钮点击事件";
+            }
+            return "未找到合适的按钮元素";
+        }).catch(err => `点击捕获发生异常: ${err.message}`);
+        
+        console.log(`按钮点击执行状态: ${clickStatus}`);
+        
+        // 核心改动：延长等待时间至 15 秒，确保异步接口把积分更新到网页DOM里
+        console.log('等待异步数据刷新响应...');
+        await delay(15000); 
+
+        await takeScreenshot(page, '3_after_clicked_result');
+
+        // --- 4. 调试：直接在控制台输出当前网页内容，破除黑屏迷雾 ---
+        console.log('=== [调试信息] 当前页面文本内容预览 ===');
+        const dumpText = await page.evaluate(() => document.body.innerText);
+        console.log(dumpText.substring(0, 800)); // 打印前800个字，让我们能在 Actions 日志里直接看汉字
+        console.log('======================================');
+
+        // --- 5. 提取数据 ---
+        console.log('第四步：提取数据...');
+        const data = await page.evaluate(() => {
+            const bodyText = document.body.innerText;
+            const daysMatch = bodyText.match(/(?:已连续签到|连续签到|已签到)\s*(\d+)\s*天/) || bodyText.match(/(\d+)\s*天/);
+            const ptsMatch = bodyText.match(/(\d+)\s*(?:pts|积分|点数)/i) || bodyText.match(/积分\s*:\s*(\d+)/);
+            
+            return {
+                days: daysMatch ? daysMatch[1] : "已成功点击(请去官网确认天数)",
+                pts: ptsMatch ? ptsMatch[1] : "未知"
+            };
+        }).catch(() => ({ days: "提取失败", pts: "提取失败" }));
+
+        messageResult += `✅ 自动签到任务处理完毕！\n📅 连续签到天数：${data.days} 天\n💎 获得/当前积分：${data.pts} pts`;
+        console.log(messageResult);
+
+    } catch (error) {
+        console.error('运行出现异常:', error);
+        messageResult += `❌ 签到失败\n原因：${error.message}`;
+        if (page) {
+            await takeScreenshot(page, 'error_dump_page').catch(() => {});
+        }
     } finally {
-        if (browser) await browser.disconnect();
-        await log('结束脚本');
+        if (browser) {
+            await browser.disconnect();
+        }
+        await sendTelegram(messageResult);
         process.exit(0);
     }
 })();
