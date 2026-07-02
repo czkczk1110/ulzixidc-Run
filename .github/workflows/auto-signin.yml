@@ -84,6 +84,7 @@ jobs:
             }
             with open("config.json", "w") as f:
                 json.dump(config, f, indent=4)
+            print("Xray 配置生成成功")
         except Exception as e:
             print(f"Xray 配置生成失败: {e}")
             exit(1)
@@ -92,8 +93,10 @@ jobs:
         ./xray -config config.json > xray.log 2>&1 &
         sleep 6
         
+        # 验证代理可用性，如果失败打印日志
         if ! curl -I -s --socks5-hostname 127.0.0.1:10080 https://www.google.com --connect-timeout 10 | grep -q "HTTP/"; then
-           echo "⚠️ 警告: 节点代理测试失败！"
+           echo "⚠️ 警告: 节点通过代理访问外网失败，请检查 VLESS_LINK 是否可用！"
+           cat xray.log
         else
            echo "🚀 节点代理测试成功！"
         fi
@@ -101,23 +104,21 @@ jobs:
     - name: Install and Setup CloakBrowser (Chrome-based)
       run: |
         sudo apt-get update
-        sudo apt-get install -y google-chrome-stable xvfb
+        sudo apt-get install -y google-chrome-stable
         
-        # 启动 Chrome 并加入虚拟显示器环境
-        xvfb-run -a google-chrome-stable \
+        # === 【核心修复】：注入完美的纯 Headless 环境防崩溃参数 ===
+        google-chrome-stable \
+          --headless=new \
           --no-sandbox \
           --disable-gpu \
           --disable-dev-shm-usage \
           --disable-software-rasterizer \
           --remote-debugging-port=9222 \
-          --user-data-dir=/tmp/chrome-user-data \
           --proxy-server="socks5://127.0.0.1:10080" \
           --lang=zh-CN \
           --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" > chrome.log 2>&1 &
         
-        # 延长等待时间到 8 秒，确保 Chrome 启动完毕
-        sleep 8
-        echo "=== Chrome 启动初始日志 ==="
+        sleep 5
         cat chrome.log || true
 
     - name: Run Signin Script
