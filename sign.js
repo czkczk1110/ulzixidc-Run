@@ -40,6 +40,23 @@ async function takeScreenshot(page, name) {
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+// 新增辅助函数：循环检测隐藏的 cf-turnstile-response，判断是否已经通过验证
+async function waitForTurnstileSolved(page, timeoutMs = 20000) {
+    const startTime = Date.now();
+    while (Date.now() - startTime < timeoutMs) {
+        const token = await page.evaluate(() => {
+            const el = document.querySelector('input[name="cf-turnstile-response"]');
+            return el ? el.value : '';
+        });
+        if (token && token.length > 0) {
+            console.log('✅ 人机验证已成功通过！(Token 已填充)');
+            return true;
+        }
+        await delay(1000);
+    }
+    return false;
+}
+
 (async () => {
     let browser;
     let page;
@@ -96,10 +113,71 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
         await takeScreenshot(page, '1_before_signin_page');
 
+        // === 【新增处理人机验证逻辑】 ===
+        console.log('正在检测并处理 Cloudflare Turnstile 人机验证...');
+        
+        // 查找人机验证的 iframe 容器
+        const turnstileIframe = await page.waitForSelector('iframe[src*="challenges.cloudflare.com"]', { timeout: 15000 }).catch(() => null);
+        
+        if (turnstileIframe) {
+            console.log('检测到 Cloudflare Turnstile 验证框，准备进行模拟点击...');
+            
+            // 先检查是否已经自动通过验证
+            let isSolved = await page.evaluate(() => {
+                const el = document.querySelector('input[name="cf-turnstile-response"]');
+                return el && el.value && el.value.length > 0;
+            });
+            
+            if (!isSolved) {
+                // 获取验证框的绝对物理坐标
+                const rect = await turnstileIframe.boundingBox();
+                if (rect) {
+                    console.log(`验证框坐标: x=${rect.x.toFixed(1)}, y=${rect.y.toFixed(1)}, 宽度=${rect.width}, 高度=${rect.height}`);
+                    
+                    // 标准 Turnstile 尺寸一般是 300x65。复选框在左侧，x 轴向右偏移 30 像素，y 轴垂直居中。
+                    const clickX = rect.x + 30;
+                    const clickY = rect.y + (rect.height / 2);
+                    
+                    // 模拟真实鼠标轨迹滑动并点击，增强防爬检测通过率
+                    await page.mouse.move(clickX, clickY, { steps: 15 });
+                    await delay(500); 
+                    await page.mouse.click(clickX, clickY);
+                    console.log(`👉 已模拟鼠标移动并点击人机验证坐标: (${clickX.toFixed(1)}, (${clickY.toFixed(1)})`);
+                    
+                    await delay(2000);
+                    await takeScreenshot(page, '2_after_turnstile_clicked');
+                } else {
+                    console.log('❌ 无法获取人机验证框的位置信息。');
+                }
+                
+                // 循环等待验证成功，设置最长等待时间为 20 秒
+                console.log('等待 Cloudflare 校验完成...');
+                isSolved = await waitForTurnstileSolved(page, 20000);
+            } else {
+                console.log('✅ 人机验证已自动通过，无需额外点击。');
+            }
+            
+            if (!isSolved) {
+                console.log('⚠️ 警告: 未检测到验证通过状态，可能被 Cloudflare 拦截。将强行尝试点击签到按钮。');
+            }
+        } else {
+            console.log('未检测到 Cloudflare Turnstile 验证框，直接跳过此步骤。');
+        }
+        // ==============================
+
         // --- 3. 定位签到按钮并尝试点击 ---
         console.log('执行第三步：正在定位签到按钮并尝试点击...');
         
         const clickStatus = await page.evaluate(() => {
+            // 改进：为了避免误点其他按钮，优先查找包含“立即签到”文本的按钮
+            const buttons = Array.from(document.querySelectorAll('button'));
+            const signinBtn = buttons.find(b => b.textContent.includes('立即签到'));
+            if (signinBtn) {
+                signinBtn.click();
+                return "成功触发【立即签到】按钮点击事件";
+            }
+            
+            // 备用兜底逻辑
             const primaryButton = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
             if (primaryButton) {
                 primaryButton.click();
