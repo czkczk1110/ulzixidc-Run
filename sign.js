@@ -43,10 +43,24 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
     try {
         console.log('🚀 步骤 1: 正在连接到本地 Chrome 浏览器...');
-        browser = await puppeteer.connect({
-            browserURL: 'http://127.0.0.1:9222',
-            defaultViewport: { width: 1280, height: 800 }
-        });
+        
+        // 新增：连不上时自动重试 5 次的机制，防止 Chrome 启动慢导致报错
+        let retries = 5;
+        while (retries > 0) {
+            try {
+                browser = await puppeteer.connect({
+                    browserURL: 'http://127.0.0.1:9222',
+                    defaultViewport: { width: 1280, height: 800 }
+                });
+                console.log('✅ 成功连接到 Chrome 浏览器！');
+                break;
+            } catch (connectErr) {
+                retries--;
+                console.log(`⚠️ 连接稍微延迟，剩余重试次数: ${retries}。原因: ${connectErr.message}`);
+                if (retries === 0) throw connectErr;
+                await delay(3000); // 连不上就等 3 秒再连
+            }
+        }
 
         page = await browser.newPage();
         
@@ -78,19 +92,17 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         await page.evaluate(() => document.querySelector('button.ant-btn-primary')?.click());
         
         // ==========================================
-        // === 核心逻辑：穿透 Shadow DOM 处理 Cloudflare 验证框 ===
+        // === 穿透 Shadow DOM 处理 Cloudflare 验证框 ===
         // ==========================================
         console.log('🕵️ 步骤 7: 开始检测 Cloudflare 验证框...');
         
         let cfBox = null;
-        // 循环检测 6 次，每次间隔 3 秒，总共给它 18 秒的弹出时间
         for (let i = 0; i < 6; i++) {
             await delay(3000); 
             
             cfBox = await page.evaluate(() => {
                 let targetBox = null;
                 
-                // 递归函数：深度遍历页面上的所有元素，包括 Shadow DOM
                 function checkNode(node) {
                     if (!node) return false;
                     
@@ -106,14 +118,12 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
                         }
                     }
                     
-                    // 穿透 Shadow DOM 隔离层
                     if (node.shadowRoot) {
                         for (let child of node.shadowRoot.children) {
                             if (checkNode(child)) return true;
                         }
                     }
                     
-                    // 遍历普通子节点
                     for (let child of node.children) {
                         if (checkNode(child)) return true;
                     }
@@ -125,29 +135,28 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
             });
 
             if (cfBox) {
-                console.log(`🎯 成功定位到 CF 验证框! 坐标: X=${cfBox.x}, Y=${cfBox.y}, 宽=${cfBox.width}, 高=${cfBox.height}`);
+                console.log(`🎯 成功定位到 CF 验证框! 坐标: X=${cfBox.x}, Y=${cfBox.y}`);
                 break;
             } else {
-                console.log(`🔍 第 ${i+1} 次扫描未找到 CF 验证框，继续等待...`);
+                console.log(`🔍 第 ${i+1} 次扫描未找到验证框，继续等待...`);
             }
         }
 
         if (cfBox) {
-            // 计算点击位置：X轴定位在框体左侧+30像素（正好是方框中心），Y轴垂直居中
             const clickX = cfBox.x + 30; 
             const clickY = cfBox.y + (cfBox.height / 2);
             
-            console.log(`🖱️ 鼠标正在移动到复选框位置: X=${clickX}, Y=${clickY} 并点击...`);
-            await page.mouse.move(clickX, clickY, { steps: 10 }); // 模拟真实滑鼠轨迹
+            console.log(`🖱️ 鼠标移动到复选框并点击: X=${clickX}, Y=${clickY}`);
+            await page.mouse.move(clickX, clickY, { steps: 10 }); 
             await delay(500);
             await page.mouse.down();
             await delay(100);
             await page.mouse.up();
             
-            console.log('✅ 点击验证框完成，等待 12 秒让 CF 验证通过并刷新数据...');
+            console.log('✅ 点击验证框完成，等待 12 秒让 CF 验证通过...');
             await delay(12000);
         } else {
-            console.log('⚠️ 扫描结束，未在页面中找到 Cloudflare 验证框，直接进行结果判断。');
+            console.log('⚠️ 未检测到验证框，直接判断页面结果。');
         }
         
         console.log('📸 记录最终页面状态截图...');
@@ -156,7 +165,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         // ==========================================
         // === 严格验证是否真的签到成功 ===
         // ==========================================
-        console.log('📊 步骤 8: 提取页面数据并严格验证结果...');
+        console.log('📊 步骤 8: 提取页面数据并验证结果...');
         const pageText = await page.evaluate(() => document.body.innerText);
         
         if (pageText.includes('今日还未签到')) {
@@ -168,7 +177,7 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
             pts: pageText.match(/(\d+)\s*(?:积分|pts)/i)?.[1] || "未知"
         };
 
-        console.log(`🎉 抓取到数据 - 天数: ${data.days}, 积分: ${data.pts}`);
+        console.log(`🎉 签到成功 - 天数: ${data.days}, 积分: ${data.pts}`);
         messageResult += `✅ 签到成功！\n📅 连续签到：${data.days} 天\n💎 当前积分：${data.pts}`;
 
     } catch (error) {
