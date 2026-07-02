@@ -86,43 +86,80 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('⏳ 等待 10 秒，确保签到页面完全加载...');
         await delay(10000); 
 
-        // 核心优化 1: 先关掉底部可能挡住点击的 Cookie 提示蓝条
-        console.log('🧹 尝试清理页面遮挡物 (如 Cookie 提示栏)...');
+        // ==========================================
+        // === 强力清除遮挡物 ===
+        // ==========================================
+        console.log('🧹 暴力移除 Cookie 提示等遮挡物...');
         await page.evaluate(() => {
-            // 点击右下角的关闭叉叉号
-            const closeBtn = document.querySelector('span[aria-label="close"]') || document.querySelector('.anticon-close');
-            if (closeBtn) closeBtn.click();
-        }).catch(e => console.log('未找到或无法关闭 Cookie 栏，跳过'));
+            // 直接遍历所有元素，遇到包含 cookie 提示的直接删掉，而不是去点关闭按钮
+            const allDivs = document.querySelectorAll('div');
+            for (let div of allDivs) {
+                if (div.innerText && div.innerText.includes('本网站使用 cookies 技术')) {
+                    div.remove();
+                }
+            }
+        });
         await delay(1000);
 
-        console.log('🖱️ 步骤 6: 尝试点击“立即签到”按钮...');
+        console.log('🖱️ 步骤 6: 点击“立即签到”按钮...');
         await page.evaluate(() => {
             const btn = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
-            if (btn) btn.click();
+            if (btn) {
+                btn.scrollIntoView({ behavior: 'smooth', block: 'center' }); // 先滚动到居中位置
+                btn.click();
+            }
         });
-        await delay(5000);
+        
+        console.log('🕵️ 步骤 7: 使用浏览器内核级 API 抓取 Cloudflare 验证框...');
+        
+        let cfBox = null;
+        // 给它 15 秒钟的时间弹出，每 1.5 秒扫描一次所有底层的 frame
+        for (let i = 0; i < 10; i++) {
+            await delay(1500);
+            
+            // 获取浏览器当前所有的 frame (无视跨域和 Shadow DOM)
+            const frames = page.frames();
+            for (const frame of frames) {
+                const url = frame.url();
+                // 如果 frame 的 URL 包含 cloudflare 挑战相关字眼
+                if (url.includes('cloudflare') || url.includes('turnstile')) {
+                    try {
+                        const frameEl = await frame.frameElement();
+                        if (frameEl) {
+                            const box = await frameEl.boundingBox();
+                            // 确保它确实在屏幕上渲染出来了，有宽度和高度
+                            if (box && box.width > 10 && box.height > 10) {
+                                cfBox = box;
+                                console.log(`🎯 第 ${i+1} 次扫描，底层 API 成功捕获验证框! 坐标 X=${cfBox.x}, Y=${cfBox.y}`);
+                                break;
+                            }
+                        }
+                    } catch (e) {
+                        // 忽略权限报错
+                    }
+                }
+            }
+            if (cfBox) break; // 找到了就跳出大循环
+        }
 
-        // ==========================================
-        // === 核心逻辑：利用绝对物理坐标盲点验证框 ===
-        // ==========================================
-        console.log('🕵️ 步骤 7: 采用空间坐标系定位物理点击 Cloudflare 验证框...');
-        
-        // 依据 1280x800 分辨率截图分析：
-        // 整个验证区域居中靠下，Verify 小方框中心恰好在 X: 575, Y: 680 的绝对位置
-        const clickX = 575;
-        const clickY = 680;
-        
-        console.log(`🖱️ 模拟真人鼠标轨迹滑动到固定坐标: X=${clickX}, Y=${clickY}`);
-        await page.mouse.move(clickX, clickY, { steps: 15 }); 
-        await delay(800);
-        
-        console.log('点击小方框...');
-        await page.mouse.down();
-        await delay(150);
-        await page.mouse.up();
-        
-        console.log('✅ 盲点完成，给系统 15 秒缓冲，处理人机响应及数据刷新...');
-        await delay(15000);
+        if (cfBox) {
+            // 精确计算：X轴为框体左侧往右偏移 30 像素，Y轴为垂直居中
+            const clickX = cfBox.x + 30;
+            const clickY = cfBox.y + (cfBox.height / 2);
+            
+            console.log(`🖱️ 鼠标精准移动到相对位置并点击: X=${clickX}, Y=${clickY}`);
+            await page.mouse.move(clickX, clickY, { steps: 15 }); 
+            await delay(500);
+            
+            await page.mouse.down();
+            await delay(100);
+            await page.mouse.up();
+            
+            console.log('✅ 点击完成，给系统 15 秒缓冲进行人机验证...');
+            await delay(15000);
+        } else {
+            console.log('⚠️ 15秒内未捕获到验证框，可能是未触发人机验证。');
+        }
         
         console.log('📸 记录最终页面状态截图...');
         await takeScreenshot(page, 'final_result');
