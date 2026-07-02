@@ -103,7 +103,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y google-chrome-stable xvfb
         
-        # 修复：增加了 --user-data-dir 参数解决连接拒绝错误[cite: 2]
+        # 启动 Chrome 并加入虚拟显示器环境
         xvfb-run -a google-chrome-stable \
           --no-sandbox \
           --disable-gpu \
@@ -115,7 +115,10 @@ jobs:
           --lang=zh-CN \
           --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" > chrome.log 2>&1 &
         
-        sleep 5
+        # 延长等待时间到 8 秒，确保 Chrome 启动完毕
+        sleep 8
+        echo "=== Chrome 启动初始日志 ==="
+        cat chrome.log || true
 
     - name: Run Signin Script
       env:
