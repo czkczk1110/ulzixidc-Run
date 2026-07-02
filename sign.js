@@ -11,76 +11,51 @@ const TG_CHAT_ID = process.env.TG_CHAT_ID;
 const screenshotDir = path.join(__dirname, 'screenshots');
 if (!fs.existsSync(screenshotDir)) fs.mkdirSync(screenshotDir);
 
-async function sendTelegram(message) {
-    if (!TG_TOKEN || !TG_CHAT_ID) return;
-    try {
-        await axios.post(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
-            chat_id: TG_CHAT_ID,
-            text: message,
-            parse_mode: 'Markdown'
-        });
-    } catch (err) { console.error('TG 发送失败'); }
-}
-
-async function takeScreenshot(page, name) {
-    await page.screenshot({ path: path.join(screenshotDir, `${name}.png`), fullPage: true });
-}
-
-const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+async function log(msg) { console.log(`[${new Date().toLocaleTimeString()}] ${msg}`); }
 
 (async () => {
     let browser;
     try {
+        await log('启动脚本...');
         browser = await puppeteer.connect({ browserURL: 'http://127.0.0.1:9222', defaultViewport: { width: 1280, height: 800 } });
         const page = await browser.newPage();
         
+        await log('打开登录页');
         await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0' });
-        await page.evaluate((e, p) => {
-            const inputs = document.querySelectorAll('input');
-            inputs[0].value = e; inputs[1].value = p;
-        }, EMAIL, PASSWORD);
-        await page.evaluate(() => document.querySelector('button[type="submit"]')?.click());
-        await delay(10000);
+        
+        await log('输入凭据');
+        await page.type('input[type="email"]', EMAIL);
+        await page.type('input[type="password"]', PASSWORD);
+        await page.click('button[type="submit"]');
+        await page.waitForNavigation({ waitUntil: 'networkidle0' });
 
+        await log('进入签到页');
         await page.goto('https://idc-new.ulzix.com/pointmall/signin', { waitUntil: 'networkidle0' });
-        await delay(5000);
+        await new Promise(r => setTimeout(r, 5000));
 
-        // 优化：仅隐藏遮挡物，不删除 DOM
-        await page.evaluate(() => {
-            const cookies = Array.from(document.querySelectorAll('div')).find(el => el.innerText?.includes('cookies'));
-            if (cookies) cookies.style.display = 'none';
-        });
+        await log('执行签到点击');
+        await page.click('button.ant-btn-primary');
+        await new Promise(r => setTimeout(r, 10000));
 
-        console.log('点击签到按钮...');
-        await page.evaluate(() => document.querySelector('button.ant-btn-primary')?.click());
-        await delay(8000);
-
-        // 使用更稳健的 iframe 定位方式
+        await log('处理验证 (尝试识别 IFRAME)');
         const frames = page.frames();
         for (const frame of frames) {
             if (frame.url().includes('turnstile')) {
-                console.log('检测到 CF 验证框，执行点击...');
-                // 获取 iframe 内部的验证复选框并点击
-                await frame.evaluate(() => {
-                    const checkbox = document.querySelector('input[type="checkbox"]') || document.querySelector('#checkbox');
-                    if (checkbox) checkbox.click();
-                });
-                break;
+                await log('发现验证框架，等待点击...');
+                await frame.waitForSelector('body', { visible: true });
+                await frame.click('body');
             }
         }
         
-        await delay(15000);
-        await takeScreenshot(page, 'final_result');
-        
-        const text = await page.evaluate(() => document.body.innerText);
-        const success = text.includes('连续签到') && !text.includes('今日还未签到');
-        
-        await sendTelegram(success ? "✅ 签到成功！" : "❌ 签到疑似失败，请查看截图。");
-        
-    } catch (error) {
-        console.error(error.message);
+        await new Promise(r => setTimeout(r, 10000));
+        await page.screenshot({ path: path.join(screenshotDir, 'final_result.png') });
+        await log('截图已保存');
+
+    } catch (e) {
+        await log('脚本出错: ' + e.message);
     } finally {
         if (browser) await browser.disconnect();
+        await log('结束脚本');
         process.exit(0);
     }
 })();
