@@ -72,6 +72,13 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
 
         page = await browser.newPage();
         
+        // 【核心防御】：监听并自动关闭页面弹窗，防止 alert 导致 puppeteer 挂起超时
+        page.on('dialog', async dialog => {
+            console.log(`💬 检测到页面弹窗提示: [${dialog.type()}] "${dialog.message()}"`);
+            await dialog.dismiss().catch(() => {});
+            console.log('👉 已自动关闭弹窗。');
+        });
+        
         // --- 1. 登录流程 ---
         console.log('正在打开登录页面...');
         await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0', timeout: 60000 });
@@ -113,55 +120,69 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
 
         await takeScreenshot(page, '1_before_signin_page');
 
-        // === 【新增处理人机验证逻辑】 ===
+        // === 【重构的人机验证逻辑】 ===
         console.log('正在检测并处理 Cloudflare Turnstile 人机验证...');
         
-        // 查找人机验证的 iframe 容器
-        const turnstileIframe = await page.waitForSelector('iframe[src*="challenges.cloudflare.com"]', { timeout: 15000 }).catch(() => null);
+        let turnstileIframe = null;
+        try {
+            // 使用 evaluateHandle 穿透影子 DOM，快速检索页面上的 iframe 节点
+            turnstileIframe = await page.evaluateHandle(() => {
+                const iframes = Array.from(document.querySelectorAll('iframe'));
+                // 1. 优先通过域名特征过滤
+                let found = iframes.find(f => f.src && f.src.includes('challenges.cloudflare.com'));
+                if (found) return found;
+                // 2. 其次通过 title 特征过滤
+                found = iframes.find(f => f.title && f.title.toLowerCase().includes('challenge'));
+                if (found) return found;
+                // 3. 兜底返回第一个 iframe
+                return iframes[0] || null;
+            }).then(handle => handle.asElement()).catch(() => null);
+        } catch (err) {
+            console.log('定位 iframe 过程中出现异常:', err.message);
+        }
         
         if (turnstileIframe) {
-            console.log('检测到 Cloudflare Turnstile 验证框，准备进行模拟点击...');
+            console.log('成功定位到 Cloudflare Turnstile 验证框，准备进行点击...');
             
-            // 先检查是否已经自动通过验证
+            // 检查当前验证是否已经通过（秒过的情况）
             let isSolved = await page.evaluate(() => {
                 const el = document.querySelector('input[name="cf-turnstile-response"]');
                 return el && el.value && el.value.length > 0;
             });
             
             if (!isSolved) {
-                // 获取验证框的绝对物理坐标
-                const rect = await turnstileIframe.boundingBox();
+                const rect = await turnstileIframe.boundingBox().catch(() => null);
                 if (rect) {
                     console.log(`验证框坐标: x=${rect.x.toFixed(1)}, y=${rect.y.toFixed(1)}, 宽度=${rect.width}, 高度=${rect.height}`);
                     
-                    // 标准 Turnstile 尺寸一般是 300x65。复选框在左侧，x 轴向右偏移 30 像素，y 轴垂直居中。
+                    // 计算点击坐标：向右偏移 30 像素（避开边缘），垂直居中
                     const clickX = rect.x + 30;
                     const clickY = rect.y + (rect.height / 2);
                     
-                    // 模拟真实鼠标轨迹滑动并点击，增强防爬检测通过率
+                    // 模拟真实鼠标移动并点击
                     await page.mouse.move(clickX, clickY, { steps: 15 });
                     await delay(500); 
                     await page.mouse.click(clickX, clickY);
-                    console.log(`👉 已模拟鼠标移动并点击人机验证坐标: (${clickX.toFixed(1)}, (${clickY.toFixed(1)})`);
+                    console.log(`👉 已模拟鼠标滑动并点击人机验证框坐标: (${clickX.toFixed(1)}, ${clickY.toFixed(1)})`);
                     
-                    await delay(2000);
+                    await delay(3000);
                     await takeScreenshot(page, '2_after_turnstile_clicked');
                 } else {
                     console.log('❌ 无法获取人机验证框的位置信息。');
                 }
                 
                 // 循环等待验证成功，设置最长等待时间为 20 秒
-                console.log('等待 Cloudflare 校验完成...');
+                console.log('正在等待 Cloudflare 接口返回 Token 校验结果...');
                 isSolved = await waitForTurnstileSolved(page, 20000);
             } else {
                 console.log('✅ 人机验证已自动通过，无需额外点击。');
             }
             
             if (!isSolved) {
-                console.log('⚠️ 警告: 未检测到验证通过状态，可能被 Cloudflare 拦截。将强行尝试点击签到按钮。');
+                console.log('⚠️ 警告: 未能在规定时间内验证通过。将直接尝试点击签到。');
             }
         } else {
-            console.log('未检测到 Cloudflare Turnstile 验证框，直接跳过此步骤。');
+            console.log('未在页面上发现任何 iframe，可能当前环境未触发人机验证。');
         }
         // ==============================
 
