@@ -83,7 +83,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
                 if (firstBtn) firstBtn.click();
             }
         });
-        
         console.log('等待页面完成登录重定向...');
         await delay(10000);
 
@@ -98,7 +97,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
         // --- 3. 定位签到按钮并尝试点击 ---
         console.log('执行第三步：正在定位签到按钮并尝试点击...');
-        
         const clickStatus = await page.evaluate(() => {
             const primaryButton = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
             if (primaryButton) {
@@ -109,6 +107,43 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         }).catch(err => `点击捕获发生异常: ${err.message}`);
         
         console.log(`按钮点击执行状态: ${clickStatus}`);
+        
+        // ==========================================
+        // === 新增：处理 Cloudflare (CF) 人机验证 ===
+        // ==========================================
+        console.log('等待并检查是否需要进行人机验证...');
+        await delay(4000); // 等待验证框完全加载弹出
+
+        try {
+            // 查找页面中所有的 iframe
+            const iframes = await page.$$('iframe');
+            for (const iframe of iframes) {
+                const src = await iframe.evaluate(el => el.src || '');
+                // 识别 Cloudflare Turnstile 验证框特征
+                if (src.includes('cloudflare') || src.includes('turnstile')) {
+                    console.log('👀 发现 Cloudflare 验证框，开始模拟真实鼠标点击...');
+                    
+                    // 获取验证框在页面上的物理坐标和尺寸
+                    const box = await iframe.boundingBox();
+                    if (box) {
+                        // 计算中心点坐标
+                        const targetX = box.x + box.width / 2;
+                        const targetY = box.y + box.height / 2;
+                        
+                        // 模拟真实的人类鼠标移动（分为10步滑过去）和点击
+                        await page.mouse.move(targetX, targetY, { steps: 10 });
+                        await delay(500); // 停顿半秒
+                        await page.mouse.click(targetX, targetY);
+                        
+                        console.log('✅ 已点击验证框');
+                        await delay(8000); // 给验证框留出充足的打勾和向服务器验证的时间
+                    }
+                }
+            }
+        } catch (cfError) {
+            console.log('⚠️ 验证框检测跳过 (可能没有弹出):', cfError.message);
+        }
+        // ==========================================
         
         // 核心改动：延长等待时间至 15 秒，确保异步接口把积分更新到网页DOM里
         console.log('等待异步数据刷新响应...');
