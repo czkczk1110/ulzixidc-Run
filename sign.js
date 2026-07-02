@@ -1,4 +1,4 @@
-const puppeteer = require('puppeteer-core');
+const { connect } = require('puppeteer-real-browser');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -27,7 +27,7 @@ async function sendTelegram(message) {
     }
 }
 
-// 修复黑屏：不再使用 fullPage: true，直接截取标准视窗画面
+// 修复黑屏：直接截取标准视窗画面
 async function takeScreenshot(page, name) {
     try {
         const filePath = path.join(screenshotDir, `${name}.png`);
@@ -40,7 +40,6 @@ async function takeScreenshot(page, name) {
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-// 新增辅助函数：循环检测隐藏的 cf-turnstile-response，判断是否已经通过验证
 async function waitForTurnstileSolved(page, timeoutMs = 20000) {
     const startTime = Date.now();
     while (Date.now() - startTime < timeoutMs) {
@@ -63,22 +62,34 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
     let messageResult = "🔔 *Ulzix 自动签到通知*\n";
 
     try {
-        console.log('正在连接到本地 Chrome...');
-        browser = await puppeteer.connect({
-            browserURL: 'http://127.0.0.1:9222',
-            defaultViewport: { width: 1280, height: 800 },
-            protocolTimeout: 60000
+        console.log('正在启动 undetected Chrome 浏览器并进行初始化...');
+        
+        // 核心改动：使用 puppeteer-real-browser 启动真实对抗指纹浏览器
+        const response = await connect({
+            headless: "auto", // 虚拟帧缓冲无头模式，解决 Linux 上的过检测难题
+            turnstile: true,  // 自动处理并点击 Cloudflare Turnstile 验证码
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--proxy-server=socks5://127.0.0.1:10080', // 接入 xray 本地代理
+                '--lang=zh-CN'
+            ]
         });
 
-        page = await browser.newPage();
-        
-        // 【核心防御】：监听并自动关闭页面弹窗，防止 alert 导致 puppeteer 挂起超时
+        browser = response.browser;
+        page = response.page;
+
+        // 设置标准电脑视窗大小
+        await page.setViewport({ width: 1280, height: 800 });
+
+        // 监听并自动关闭页面弹窗，防止 alert 导致 puppeteer 挂起超时
         page.on('dialog', async dialog => {
             console.log(`💬 检测到页面弹窗提示: [${dialog.type()}] "${dialog.message()}"`);
             await dialog.dismiss().catch(() => {});
             console.log('👉 已自动关闭弹窗。');
         });
-        
+
         // --- 1. 登录流程 ---
         console.log('正在打开登录页面...');
         await page.goto('https://idc-new.ulzix.com/login', { waitUntil: 'networkidle0', timeout: 60000 });
@@ -120,77 +131,19 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
 
         await takeScreenshot(page, '1_before_signin_page');
 
-        // === 【重构的人机验证逻辑】 ===
-        console.log('正在检测并处理 Cloudflare Turnstile 人机验证...');
-        
-        let turnstileIframe = null;
-        try {
-            // 使用 evaluateHandle 穿透影子 DOM，快速检索页面上的 iframe 节点
-            turnstileIframe = await page.evaluateHandle(() => {
-                const iframes = Array.from(document.querySelectorAll('iframe'));
-                // 1. 优先通过域名特征过滤
-                let found = iframes.find(f => f.src && f.src.includes('challenges.cloudflare.com'));
-                if (found) return found;
-                // 2. 其次通过 title 特征过滤
-                found = iframes.find(f => f.title && f.title.toLowerCase().includes('challenge'));
-                if (found) return found;
-                // 3. 兜底返回第一个 iframe
-                return iframes[0] || null;
-            }).then(handle => handle.asElement()).catch(() => null);
-        } catch (err) {
-            console.log('定位 iframe 过程中出现异常:', err.message);
-        }
-        
-        if (turnstileIframe) {
-            console.log('成功定位到 Cloudflare Turnstile 验证框，准备进行点击...');
-            
-            // 检查当前验证是否已经通过（秒过的情况）
-            let isSolved = await page.evaluate(() => {
-                const el = document.querySelector('input[name="cf-turnstile-response"]');
-                return el && el.value && el.value.length > 0;
-            });
-            
-            if (!isSolved) {
-                const rect = await turnstileIframe.boundingBox().catch(() => null);
-                if (rect) {
-                    console.log(`验证框坐标: x=${rect.x.toFixed(1)}, y=${rect.y.toFixed(1)}, 宽度=${rect.width}, 高度=${rect.height}`);
-                    
-                    // 计算点击坐标：向右偏移 30 像素（避开边缘），垂直居中
-                    const clickX = rect.x + 30;
-                    const clickY = rect.y + (rect.height / 2);
-                    
-                    // 模拟真实鼠标移动并点击
-                    await page.mouse.move(clickX, clickY, { steps: 15 });
-                    await delay(500); 
-                    await page.mouse.click(clickX, clickY);
-                    console.log(`👉 已模拟鼠标滑动并点击人机验证框坐标: (${clickX.toFixed(1)}, ${clickY.toFixed(1)})`);
-                    
-                    await delay(3000);
-                    await takeScreenshot(page, '2_after_turnstile_clicked');
-                } else {
-                    console.log('❌ 无法获取人机验证框的位置信息。');
-                }
-                
-                // 循环等待验证成功，设置最长等待时间为 20 秒
-                console.log('正在等待 Cloudflare 接口返回 Token 校验结果...');
-                isSolved = await waitForTurnstileSolved(page, 20000);
-            } else {
-                console.log('✅ 人机验证已自动通过，无需额外点击。');
-            }
-            
-            if (!isSolved) {
-                console.log('⚠️ 警告: 未能在规定时间内验证通过。将直接尝试点击签到。');
-            }
+        // ====== 【处理 Cloudflare Turnstile】 ======
+        console.log('正在等待 Cloudflare Turnstile 在后台自动完成验证并打勾...');
+        const isSolved = await waitForTurnstileSolved(page, 20000);
+        if (isSolved) {
+            console.log('✅ 人机验证已成功绕过！');
         } else {
-            console.log('未在页面上发现任何 iframe，可能当前环境未触发人机验证。');
+            console.log('⚠️ 警告: 未能确认人机验证通过，将尝试强行点击签到。');
         }
-        // ==============================
 
         // --- 3. 定位签到按钮并尝试点击 ---
         console.log('执行第三步：正在定位签到按钮并尝试点击...');
         
         const clickStatus = await page.evaluate(() => {
-            // 改进：为了避免误点其他按钮，优先查找包含“立即签到”文本的按钮
             const buttons = Array.from(document.querySelectorAll('button'));
             const signinBtn = buttons.find(b => b.textContent.includes('立即签到'));
             if (signinBtn) {
@@ -198,7 +151,6 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
                 return "成功触发【立即签到】按钮点击事件";
             }
             
-            // 备用兜底逻辑
             const primaryButton = document.querySelector('button.ant-btn-primary') || document.querySelector('button');
             if (primaryButton) {
                 primaryButton.click();
@@ -209,7 +161,7 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
         
         console.log(`按钮点击执行状态: ${clickStatus}`);
         
-        // 核心改动：延长等待时间至 15 秒，确保异步接口把积分更新到网页DOM里
+        // 延长等待时间至 15 秒，确保异步接口把积分更新到网页DOM里
         console.log('等待异步数据刷新响应...');
         await delay(15000); 
 
@@ -245,7 +197,8 @@ async function waitForTurnstileSolved(page, timeoutMs = 20000) {
         }
     } finally {
         if (browser) {
-            await browser.disconnect();
+            // 改用 close() 确保关闭浏览器实例
+            await browser.close().catch(() => {});
         }
         await sendTelegram(messageResult);
         process.exit(0);
