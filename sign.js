@@ -78,40 +78,76 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         await page.evaluate(() => document.querySelector('button.ant-btn-primary')?.click());
         
         // ==========================================
-        // === 核心逻辑：处理 Cloudflare 验证框 ===
+        // === 核心逻辑：穿透 Shadow DOM 处理 Cloudflare 验证框 ===
         // ==========================================
-        console.log('🕵️ 步骤 7: 等待 5 秒，检测是否有 Cloudflare 验证框弹出...');
-        await delay(5000);
-        const iframes = await page.$$('iframe');
-        console.log(`🔍 页面上共发现 ${iframes.length} 个 iframe`);
+        console.log('🕵️ 步骤 7: 开始检测 Cloudflare 验证框...');
         
-        for (const iframe of iframes) {
-            const src = await iframe.evaluate(el => el.src || '');
-            const title = await iframe.evaluate(el => el.title || '');
+        let cfBox = null;
+        // 循环检测 6 次，每次间隔 3 秒，总共给它 18 秒的弹出时间
+        for (let i = 0; i < 6; i++) {
+            await delay(3000); 
             
-            // 只要包含 cloudflare 或 turnstile 关键字就认为是目标
-            if (src.includes('cloudflare') || src.includes('turnstile') || title.toLowerCase().includes('cloudflare')) {
-                console.log(`🎯 找到 CF 验证框! (src: ${src.substring(0, 50)}...)`);
-                const box = await iframe.boundingBox();
+            cfBox = await page.evaluate(() => {
+                let targetBox = null;
                 
-                if (box) {
-                    console.log(`📏 验证框坐标: X=${box.x}, Y=${box.y}, 宽=${box.width}, 高=${box.height}`);
+                // 递归函数：深度遍历页面上的所有元素，包括 Shadow DOM
+                function checkNode(node) {
+                    if (!node) return false;
                     
-                    // 【关键修复】：点击框的左侧 30px 处，而不是正中心！正中心是白板，左边才是框！
-                    const clickX = box.x + 30; 
-                    const clickY = box.y + (box.height / 2);
+                    if (node.tagName === 'IFRAME') {
+                        const src = node.src || '';
+                        const title = node.title || '';
+                        if (src.includes('cloudflare') || src.includes('turnstile') || title.toLowerCase().includes('cloudflare')) {
+                            const rect = node.getBoundingClientRect();
+                            if (rect.width > 0 && rect.height > 0) {
+                                targetBox = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+                                return true;
+                            }
+                        }
+                    }
                     
-                    console.log(`🖱️ 鼠标正在移动到复选框位置: X=${clickX}, Y=${clickY} 并点击...`);
-                    await page.mouse.move(clickX, clickY, { steps: 10 }); // 模拟真实滑动
-                    await delay(500);
-                    await page.mouse.down();
-                    await delay(100);
-                    await page.mouse.up();
+                    // 穿透 Shadow DOM 隔离层
+                    if (node.shadowRoot) {
+                        for (let child of node.shadowRoot.children) {
+                            if (checkNode(child)) return true;
+                        }
+                    }
                     
-                    console.log('✅ 点击验证框完成，等待 10 秒让 CF 验证通过...');
-                    await delay(10000);
+                    // 遍历普通子节点
+                    for (let child of node.children) {
+                        if (checkNode(child)) return true;
+                    }
+                    return false;
                 }
+                
+                checkNode(document.body);
+                return targetBox;
+            });
+
+            if (cfBox) {
+                console.log(`🎯 成功定位到 CF 验证框! 坐标: X=${cfBox.x}, Y=${cfBox.y}, 宽=${cfBox.width}, 高=${cfBox.height}`);
+                break;
+            } else {
+                console.log(`🔍 第 ${i+1} 次扫描未找到 CF 验证框，继续等待...`);
             }
+        }
+
+        if (cfBox) {
+            // 计算点击位置：X轴定位在框体左侧+30像素（正好是方框中心），Y轴垂直居中
+            const clickX = cfBox.x + 30; 
+            const clickY = cfBox.y + (cfBox.height / 2);
+            
+            console.log(`🖱️ 鼠标正在移动到复选框位置: X=${clickX}, Y=${clickY} 并点击...`);
+            await page.mouse.move(clickX, clickY, { steps: 10 }); // 模拟真实滑鼠轨迹
+            await delay(500);
+            await page.mouse.down();
+            await delay(100);
+            await page.mouse.up();
+            
+            console.log('✅ 点击验证框完成，等待 12 秒让 CF 验证通过并刷新数据...');
+            await delay(12000);
+        } else {
+            console.log('⚠️ 扫描结束，未在页面中找到 Cloudflare 验证框，直接进行结果判断。');
         }
         
         console.log('📸 记录最终页面状态截图...');
@@ -123,7 +159,6 @@ const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
         console.log('📊 步骤 8: 提取页面数据并严格验证结果...');
         const pageText = await page.evaluate(() => document.body.innerText);
         
-        // 如果页面上依然存在这几个字，说明根本没成功
         if (pageText.includes('今日还未签到')) {
             throw new Error('页面依然显示“今日还未签到”，可能人机验证未通过或遇到其他限制！');
         }
